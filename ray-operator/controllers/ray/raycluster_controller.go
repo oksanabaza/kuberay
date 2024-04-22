@@ -19,8 +19,9 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
-	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	"k8s.io/client-go/tools/record"
+
+	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
@@ -33,7 +34,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -198,6 +198,7 @@ func (r *RayClusterReconciler) deleteAllPods(ctx context.Context, filters common
 
 func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request ctrl.Request, instance *rayv1.RayCluster) (ctrl.Result, error) {
 	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("Ray cluster started", "cluster name", request.Name, ctrl.LoggerFrom(ctx))
 
 	// Please do NOT modify `originalRayClusterInstance` in the following code.
 	originalRayClusterInstance := instance.DeepCopy()
@@ -216,7 +217,7 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 					"finalizer", utils.GCSFaultToleranceRedisCleanupFinalizer)
 				controllerutil.AddFinalizer(instance, utils.GCSFaultToleranceRedisCleanupFinalizer)
 				if err := r.Update(ctx, instance); err != nil {
-					logger.Error(err, fmt.Sprintf("Failed to add the finalizer %s to the RayCluster.", utils.GCSFaultToleranceRedisCleanupFinalizer))
+					err = fmt.Errorf("Failed to add the finalizer %s to the RayCluster: %w", utils.GCSFaultToleranceRedisCleanupFinalizer, err)
 					return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 				}
 				// Only start the RayCluster reconciliation after the finalizer is added.
@@ -287,7 +288,6 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 						logger.Info(fmt.Sprintf("Redis cleanup Job already exists. Requeue the RayCluster CR %s.", instance.Name))
 						return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 					}
-					logger.Error(err, "Failed to create Redis cleanup Job")
 					return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 				}
 				logger.Info("Successfully created Redis cleanup Job", "Job name", redisCleanupJob.Name)
@@ -347,6 +347,7 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 		}
 	}
+	logger.Info("Pods are being created for RayCluster", "cluster name", request.Name)
 	if err := r.reconcilePods(ctx, instance); err != nil {
 		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
 			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
@@ -400,13 +401,22 @@ func (r *RayClusterReconciler) inconsistentRayClusterStatus(ctx context.Context,
 			oldStatus.State, newStatus.State, oldStatus.Reason, newStatus.Reason))
 		return true
 	}
-	if oldStatus.AvailableWorkerReplicas != newStatus.AvailableWorkerReplicas || oldStatus.DesiredWorkerReplicas != newStatus.DesiredWorkerReplicas ||
-		oldStatus.MinWorkerReplicas != newStatus.MinWorkerReplicas || oldStatus.MaxWorkerReplicas != newStatus.MaxWorkerReplicas {
+	if oldStatus.ReadyWorkerReplicas != newStatus.ReadyWorkerReplicas ||
+		oldStatus.AvailableWorkerReplicas != newStatus.AvailableWorkerReplicas ||
+		oldStatus.DesiredWorkerReplicas != newStatus.DesiredWorkerReplicas ||
+		oldStatus.MinWorkerReplicas != newStatus.MinWorkerReplicas ||
+		oldStatus.MaxWorkerReplicas != newStatus.MaxWorkerReplicas {
 		logger.Info("inconsistentRayClusterStatus", "detect inconsistency", fmt.Sprintf(
-			"old AvailableWorkerReplicas: %d, new AvailableWorkerReplicas: %d, old DesiredWorkerReplicas: %d, new DesiredWorkerReplicas: %d, "+
-				"old MinWorkerReplicas: %d, new MinWorkerReplicas: %d, old MaxWorkerReplicas: %d, new MaxWorkerReplicas: %d",
-			oldStatus.AvailableWorkerReplicas, newStatus.AvailableWorkerReplicas, oldStatus.DesiredWorkerReplicas, newStatus.DesiredWorkerReplicas,
-			oldStatus.MinWorkerReplicas, newStatus.MinWorkerReplicas, oldStatus.MaxWorkerReplicas, newStatus.MaxWorkerReplicas))
+			"old ReadyWorkerReplicas: %d, new ReadyWorkerReplicas: %d, "+
+				"old AvailableWorkerReplicas: %d, new AvailableWorkerReplicas: %d, "+
+				"old DesiredWorkerReplicas: %d, new DesiredWorkerReplicas: %d, "+
+				"old MinWorkerReplicas: %d, new MinWorkerReplicas: %d, "+
+				"old MaxWorkerReplicas: %d, new MaxWorkerReplicas: %d",
+			oldStatus.ReadyWorkerReplicas, newStatus.ReadyWorkerReplicas,
+			oldStatus.AvailableWorkerReplicas, newStatus.AvailableWorkerReplicas,
+			oldStatus.DesiredWorkerReplicas, newStatus.DesiredWorkerReplicas,
+			oldStatus.MinWorkerReplicas, newStatus.MinWorkerReplicas,
+			oldStatus.MaxWorkerReplicas, newStatus.MaxWorkerReplicas))
 		return true
 	}
 	if !reflect.DeepEqual(oldStatus.Endpoints, newStatus.Endpoints) || !reflect.DeepEqual(oldStatus.Head, newStatus.Head) {
@@ -439,7 +449,6 @@ func (r *RayClusterReconciler) reconcileRouteOpenShift(ctx context.Context, inst
 	headRoutes := routev1.RouteList{}
 	filterLabels := client.MatchingLabels{utils.RayClusterLabelKey: instance.Name}
 	if err := r.List(ctx, &headRoutes, client.InNamespace(instance.Namespace), filterLabels); err != nil {
-		logger.Error(err, "Route Listing error!", "Route.Error", err)
 		return err
 	}
 
@@ -451,7 +460,6 @@ func (r *RayClusterReconciler) reconcileRouteOpenShift(ctx context.Context, inst
 	if headRoutes.Items == nil || len(headRoutes.Items) == 0 {
 		route, err := common.BuildRouteForHeadService(*instance)
 		if err != nil {
-			logger.Error(err, "Failed building route!", "Route.Error", err)
 			return err
 		}
 
@@ -461,7 +469,6 @@ func (r *RayClusterReconciler) reconcileRouteOpenShift(ctx context.Context, inst
 
 		err = r.createHeadRoute(ctx, route, instance)
 		if err != nil {
-			logger.Error(err, "Failed creating route!", "Route.Error", err)
 			return err
 		}
 	}
@@ -706,12 +713,18 @@ func (r *RayClusterReconciler) reconcilePods(ctx context.Context, instance *rayv
 		if err := r.List(ctx, &workerPods, common.RayClusterGroupPodsAssociationOptions(instance, worker.GroupName).ToListOptions()...); err != nil {
 			return err
 		}
-
 		// Delete unhealthy worker Pods.
 		deletedWorkers := make(map[string]struct{})
 		deleted := struct{}{}
 		numDeletedUnhealthyWorkerPods := 0
 		for _, workerPod := range workerPods.Items {
+			logger.Info("reconcilePods", "Worker Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
+			if workerPod.Status.Phase == "Running" {
+				logger.Info("Pods created for RayCluster")
+			}
+			if workerPod.Status.Phase == "Failed" {
+				logger.Info("reconcilePods", "Worker Pod Name: ", " Status: ", workerPod.Status.Phase, workerPod.Name, " Message: ", workerPod.Status.Message)
+			}
 			shouldDelete, reason := shouldDeletePod(workerPod, rayv1.WorkerNode)
 			logger.Info("reconcilePods", "worker Pod", workerPod.Name, "shouldDelete", shouldDelete, "reason", reason)
 			if shouldDelete {
@@ -855,7 +868,6 @@ func shouldDeletePod(pod corev1.Pod, nodeType rayv1.RayNodeType) (bool, string) 
 				"KubeRay will delete the Pod and create new Pods in the next reconciliation if necessary.", nodeType, pod.Name, pod.Status.Phase)
 		return true, reason
 	}
-
 	rayContainerTerminated := getRayContainerStateTerminated(pod)
 	if pod.Status.Phase == corev1.PodRunning && rayContainerTerminated != nil {
 		if isRestartPolicyAlways {
@@ -925,7 +937,6 @@ func (r *RayClusterReconciler) createHeadIngress(ctx context.Context, ingress *n
 			logger.Info("Ingress already exists, no need to create")
 			return nil
 		}
-		logger.Error(err, "Ingress create error!", "Ingress.Error", err)
 		return err
 	}
 	logger.Info("Ingress created successfully", "ingress name", ingress.Name)
@@ -944,7 +955,6 @@ func (r *RayClusterReconciler) createHeadRoute(ctx context.Context, route *route
 			logger.Info("Route already exists, no need to create")
 			return nil
 		}
-		logger.Error(err, "Route create error!", "Route.Error", err)
 		return err
 	}
 	logger.Info("Route created successfully", "route name", route.Name)
@@ -967,7 +977,6 @@ func (r *RayClusterReconciler) createService(ctx context.Context, raySvc *corev1
 			logger.Info("Pod service already exist, no need to create")
 			return nil
 		}
-		logger.Error(err, "Pod Service create error!", "Pod.Service.Error", err)
 		return err
 	}
 	logger.Info("Pod Service created successfully", "service name", raySvc.Name)
@@ -980,10 +989,6 @@ func (r *RayClusterReconciler) createHeadPod(ctx context.Context, instance rayv1
 
 	// build the pod then create it
 	pod := r.buildHeadPod(ctx, instance)
-	podIdentifier := types.NamespacedName{
-		Name:      pod.Name,
-		Namespace: pod.Namespace,
-	}
 	if EnableBatchScheduler {
 		if scheduler, err := r.BatchSchedulerMgr.GetSchedulerForCluster(&instance); err == nil {
 			scheduler.AddMetadataToPod(&instance, utils.RayNodeHeadGroupLabelValue, &pod)
@@ -994,19 +999,7 @@ func (r *RayClusterReconciler) createHeadPod(ctx context.Context, instance rayv1
 
 	logger.Info("createHeadPod", "head pod with name", pod.GenerateName)
 	if err := r.Create(ctx, &pod); err != nil {
-		if errors.IsAlreadyExists(err) {
-			fetchedPod := corev1.Pod{}
-			// the pod might be in terminating state, we need to check
-			if errPod := r.Get(ctx, podIdentifier, &fetchedPod); errPod == nil {
-				if fetchedPod.DeletionTimestamp != nil {
-					logger.Error(errPod, "create pod error!", "pod is in a terminating state, we will wait until it is cleaned up", podIdentifier)
-					return err
-				}
-			}
-			logger.Info("Creating pod", "Pod already exists", pod.Name)
-		} else {
-			return err
-		}
+		return err
 	}
 	r.Recorder.Eventf(&instance, corev1.EventTypeNormal, "Created", "Created head pod %s", pod.Name)
 	return nil
@@ -1017,10 +1010,6 @@ func (r *RayClusterReconciler) createWorkerPod(ctx context.Context, instance ray
 
 	// build the pod then create it
 	pod := r.buildWorkerPod(ctx, instance, worker)
-	podIdentifier := types.NamespacedName{
-		Name:      pod.Name,
-		Namespace: pod.Namespace,
-	}
 	if EnableBatchScheduler {
 		if scheduler, err := r.BatchSchedulerMgr.GetSchedulerForCluster(&instance); err == nil {
 			scheduler.AddMetadataToPod(&instance, worker.GroupName, &pod)
@@ -1031,20 +1020,7 @@ func (r *RayClusterReconciler) createWorkerPod(ctx context.Context, instance ray
 
 	replica := pod
 	if err := r.Create(ctx, &replica); err != nil {
-		if errors.IsAlreadyExists(err) {
-			fetchedPod := corev1.Pod{}
-			// the pod might be in terminating state, we need to check
-			if errPod := r.Get(ctx, podIdentifier, &fetchedPod); errPod == nil {
-				if fetchedPod.DeletionTimestamp != nil {
-					logger.Error(errPod, "create pod error!", "pod is in a terminating state, we will wait until it is cleaned up", podIdentifier)
-					return err
-				}
-			}
-			logger.Info("Creating pod", "Pod already exists", pod.Name)
-		} else {
-			logger.Error(fmt.Errorf("createWorkerPod error"), "error creating pod", "pod", pod, "err = ", err)
-			return err
-		}
+		return err
 	}
 	logger.Info("Created pod", "Pod ", pod.GenerateName)
 	r.Recorder.Eventf(&instance, corev1.EventTypeNormal, "Created", "Created worker pod %s", pod.Name)
@@ -1222,6 +1198,7 @@ func (r *RayClusterReconciler) calculateStatus(ctx context.Context, instance *ra
 		return nil, err
 	}
 
+	newInstance.Status.ReadyWorkerReplicas = utils.CalculateReadyReplicas(runtimePods)
 	newInstance.Status.AvailableWorkerReplicas = utils.CalculateAvailableReplicas(runtimePods)
 	newInstance.Status.DesiredWorkerReplicas = utils.CalculateDesiredReplicas(ctx, newInstance)
 	newInstance.Status.MinWorkerReplicas = utils.CalculateMinReplicas(newInstance)
@@ -1251,6 +1228,12 @@ func (r *RayClusterReconciler) calculateStatus(ctx context.Context, instance *ra
 
 	timeNow := metav1.Now()
 	newInstance.Status.LastUpdateTime = &timeNow
+	if instance.Status.State != newInstance.Status.State {
+		if newInstance.Status.StateTransitionTimes == nil {
+			newInstance.Status.StateTransitionTimes = make(map[rayv1.ClusterState]*metav1.Time)
+		}
+		newInstance.Status.StateTransitionTimes[newInstance.Status.State] = &timeNow
+	}
 
 	return newInstance, nil
 }
@@ -1262,7 +1245,6 @@ func (r *RayClusterReconciler) getHeadPodIP(ctx context.Context, instance *rayv1
 	runtimePods := corev1.PodList{}
 	filterLabels := client.MatchingLabels{utils.RayClusterLabelKey: instance.Name, utils.RayNodeTypeLabelKey: string(rayv1.HeadNode)}
 	if err := r.List(ctx, &runtimePods, client.InNamespace(instance.Namespace), filterLabels); err != nil {
-		logger.Error(err, "Failed to list pods while getting head pod ip.")
 		return "", err
 	}
 	if len(runtimePods.Items) != 1 {
@@ -1392,7 +1374,6 @@ func (r *RayClusterReconciler) reconcileAutoscalerServiceAccount(ctx context.Con
 				logger.Info("Pod service account already exist, no need to create")
 				return nil
 			}
-			logger.Error(err, "Pod Service Account create error!", "Pod.ServiceAccount.Error", err)
 			return err
 		}
 		logger.Info("Pod ServiceAccount created successfully", "service account name", serviceAccount.Name)
@@ -1434,7 +1415,6 @@ func (r *RayClusterReconciler) reconcileAutoscalerRole(ctx context.Context, inst
 				logger.Info("role already exist, no need to create")
 				return nil
 			}
-			logger.Error(err, "Role create error!", "Role.Error", err)
 			return err
 		}
 		logger.Info("Role created successfully", "role name", role.Name)
@@ -1476,7 +1456,6 @@ func (r *RayClusterReconciler) reconcileAutoscalerRoleBinding(ctx context.Contex
 				logger.Info("role binding already exist, no need to create")
 				return nil
 			}
-			logger.Error(err, "Role binding create error!", "RoleBinding.Error", err)
 			return err
 		}
 		logger.Info("RoleBinding created successfully", "role binding name", roleBinding.Name)
