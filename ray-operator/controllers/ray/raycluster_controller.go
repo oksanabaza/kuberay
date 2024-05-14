@@ -198,6 +198,7 @@ func (r *RayClusterReconciler) deleteAllPods(ctx context.Context, filters common
 
 func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request ctrl.Request, instance *rayv1.RayCluster) (ctrl.Result, error) {
 	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("Ray cluster started", instance)
 
 	// Please do NOT modify `originalRayClusterInstance` in the following code.
 	originalRayClusterInstance := instance.DeepCopy()
@@ -346,6 +347,7 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 		}
 	}
+
 	if err := r.reconcilePods(ctx, instance); err != nil {
 		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
 			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
@@ -356,7 +358,6 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 		r.Recorder.Event(instance, corev1.EventTypeWarning, string(rayv1.PodReconciliationError), err.Error())
 		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 	}
-
 	// Calculate the new status for the RayCluster. Note that the function will deep copy `instance` instead of mutating it.
 	newInstance, err := r.calculateStatus(ctx, instance)
 	if err != nil {
@@ -711,12 +712,18 @@ func (r *RayClusterReconciler) reconcilePods(ctx context.Context, instance *rayv
 		if err := r.List(ctx, &workerPods, common.RayClusterGroupPodsAssociationOptions(instance, worker.GroupName).ToListOptions()...); err != nil {
 			return err
 		}
-
 		// Delete unhealthy worker Pods.
 		deletedWorkers := make(map[string]struct{})
 		deleted := struct{}{}
 		numDeletedUnhealthyWorkerPods := 0
 		for _, workerPod := range workerPods.Items {
+			if workerPod.Status.Phase != "Failed" {
+				logger.Info("reconcilePods", "oks Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
+			} else {
+				logger.Info("reconcilePods", "oks Pod Name: ", " Status: ", workerPod.Status.Phase, workerPod.Name, " Message: ", workerPod.Status.Message)
+			}
+			// fmt.Print("oks Pod Name: ", workerPod.Name, "Status: ", workerPod.Status.Phase)
+			// logger.Info("reconcilePods", "oks Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
 			shouldDelete, reason := shouldDeletePod(workerPod, rayv1.WorkerNode)
 			logger.Info("reconcilePods", "worker Pod", workerPod.Name, "shouldDelete", shouldDelete, "reason", reason)
 			if shouldDelete {
@@ -860,7 +867,6 @@ func shouldDeletePod(pod corev1.Pod, nodeType rayv1.RayNodeType) (bool, string) 
 				"KubeRay will delete the Pod and create new Pods in the next reconciliation if necessary.", nodeType, pod.Name, pod.Status.Phase)
 		return true, reason
 	}
-
 	rayContainerTerminated := getRayContainerStateTerminated(pod)
 	if pod.Status.Phase == corev1.PodRunning && rayContainerTerminated != nil {
 		if isRestartPolicyAlways {
@@ -1221,7 +1227,6 @@ func (r *RayClusterReconciler) calculateStatus(ctx context.Context, instance *ra
 
 	timeNow := metav1.Now()
 	newInstance.Status.LastUpdateTime = &timeNow
-
 	if instance.Status.State != newInstance.Status.State {
 		if newInstance.Status.StateTransitionTimes == nil {
 			newInstance.Status.StateTransitionTimes = make(map[rayv1.ClusterState]*metav1.Time)
