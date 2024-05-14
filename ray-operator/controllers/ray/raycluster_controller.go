@@ -198,7 +198,7 @@ func (r *RayClusterReconciler) deleteAllPods(ctx context.Context, filters common
 
 func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request ctrl.Request, instance *rayv1.RayCluster) (ctrl.Result, error) {
 	logger := ctrl.LoggerFrom(ctx)
-	logger.Info("Ray cluster started", instance)
+	logger.Info("Ray cluster started", "cluster name", request.Name, ctrl.LoggerFrom(ctx))
 
 	// Please do NOT modify `originalRayClusterInstance` in the following code.
 	originalRayClusterInstance := instance.DeepCopy()
@@ -347,7 +347,7 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 		}
 	}
-
+	logger.Info("Pods are being created for RayCluster", "cluster name", request.Name)
 	if err := r.reconcilePods(ctx, instance); err != nil {
 		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
 			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
@@ -358,6 +358,7 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 		r.Recorder.Event(instance, corev1.EventTypeWarning, string(rayv1.PodReconciliationError), err.Error())
 		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 	}
+
 	// Calculate the new status for the RayCluster. Note that the function will deep copy `instance` instead of mutating it.
 	newInstance, err := r.calculateStatus(ctx, instance)
 	if err != nil {
@@ -717,13 +718,13 @@ func (r *RayClusterReconciler) reconcilePods(ctx context.Context, instance *rayv
 		deleted := struct{}{}
 		numDeletedUnhealthyWorkerPods := 0
 		for _, workerPod := range workerPods.Items {
-			if workerPod.Status.Phase != "Failed" {
-				logger.Info("reconcilePods", "oks Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
-			} else {
-				logger.Info("reconcilePods", "oks Pod Name: ", " Status: ", workerPod.Status.Phase, workerPod.Name, " Message: ", workerPod.Status.Message)
+			logger.Info("reconcilePods", "Worker Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
+			if workerPod.Status.Phase == "Running" {
+				logger.Info("Pods created for RayCluster")
 			}
-			// fmt.Print("oks Pod Name: ", workerPod.Name, "Status: ", workerPod.Status.Phase)
-			// logger.Info("reconcilePods", "oks Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
+			if workerPod.Status.Phase == "Failed" {
+				logger.Info("reconcilePods", "Worker Pod Name: ", " Status: ", workerPod.Status.Phase, workerPod.Name, " Message: ", workerPod.Status.Message)
+			}
 			shouldDelete, reason := shouldDeletePod(workerPod, rayv1.WorkerNode)
 			logger.Info("reconcilePods", "worker Pod", workerPod.Name, "shouldDelete", shouldDelete, "reason", reason)
 			if shouldDelete {
