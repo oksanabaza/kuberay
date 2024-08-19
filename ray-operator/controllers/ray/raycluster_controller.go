@@ -320,6 +320,51 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, request 
 			logger.Error(reconcileErr, "Error reconcile resources", "function name", funcName)
 			break
 		}
+		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+	}
+	if err := r.reconcileAutoscalerRoleBinding(ctx, instance); err != nil {
+		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
+			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
+		}
+		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+	}
+	if err := r.reconcileIngress(ctx, instance); err != nil {
+		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
+			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
+		}
+		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+	}
+	if err := r.reconcileHeadService(ctx, instance); err != nil {
+		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
+			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
+		}
+		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+	}
+	if err := r.reconcileHeadlessService(ctx, instance); err != nil {
+		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
+			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
+		}
+		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+	}
+	// Only reconcile the K8s service for Ray Serve when the "ray.io/enable-serve-service" annotation is set to true.
+	if enableServeServiceValue, exist := instance.Annotations[utils.EnableServeServiceKey]; exist && enableServeServiceValue == utils.EnableServeServiceTrue {
+		if err := r.reconcileServeService(ctx, instance); err != nil {
+			if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
+				logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
+			}
+			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+		}
+	}
+	logger.Info("Pods are being created for RayCluster", "cluster name", request.Name)
+	if err := r.reconcilePods(ctx, instance); err != nil {
+		if updateErr := r.updateClusterState(ctx, instance, rayv1.Failed); updateErr != nil {
+			logger.Error(updateErr, "RayCluster update state error", "cluster name", request.Name)
+		}
+		if updateErr := r.updateClusterReason(ctx, instance, err.Error()); updateErr != nil {
+			logger.Error(updateErr, "RayCluster update reason error", "cluster name", request.Name)
+		}
+		r.Recorder.Event(instance, corev1.EventTypeWarning, string(rayv1.PodReconciliationError), err.Error())
+		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 	}
 
 	// Calculate the new status for the RayCluster. Note that the function will deep copy `instance` instead of mutating it.
@@ -692,6 +737,12 @@ func (r *RayClusterReconciler) reconcilePods(ctx context.Context, instance *rayv
 		deleted := struct{}{}
 		numDeletedUnhealthyWorkerPods := 0
 		for _, workerPod := range workerPods.Items {
+			logger.Info("reconcilePods", "Worker Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase)
+			if workerPod.Status.Phase != "Running" && workerPod.Status.Message != "" {
+				logger.Info("reconcilePods", "Worker Pod Name: ", workerPod.Name, " Status: ", workerPod.Status.Phase, " Message: ", workerPod.Status.Conditions[0].Message)
+			} else {
+				logger.Info("Pods created for RayCluster")
+			}
 			shouldDelete, reason := shouldDeletePod(workerPod, rayv1.WorkerNode)
 			logger.Info("reconcilePods", "worker Pod", workerPod.Name, "shouldDelete", shouldDelete, "reason", reason)
 			if shouldDelete {
