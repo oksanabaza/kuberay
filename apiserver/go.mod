@@ -10,6 +10,7 @@ require (
 	github.com/prometheus/client_golang v1.19.1
 	github.com/ray-project/kuberay/proto v0.0.0-20220703232803-3e7749d17400
 	github.com/ray-project/kuberay/ray-operator v0.0.0-20220703232803-3e7749d17400
+<<<<<<< HEAD
 	github.com/stretchr/testify v1.9.0
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.34.2
@@ -17,6 +18,15 @@ require (
 	k8s.io/apimachinery v0.30.2
 	k8s.io/client-go v0.30.2
 	k8s.io/klog/v2 v2.130.1
+=======
+	github.com/stretchr/testify v1.8.4
+	google.golang.org/grpc v1.59.0
+	google.golang.org/protobuf v1.34.2
+	k8s.io/api v0.28.4
+	k8s.io/apimachinery v0.28.4
+	k8s.io/client-go v0.28.4
+	k8s.io/klog/v2 v2.100.1
+>>>>>>> 61b0d76b (DROP: Upgrade google.golang.org/protobuf to v1.34.2 to resolve CVE)
 )
 
 require (
